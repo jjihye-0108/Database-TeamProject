@@ -1,12 +1,7 @@
 from product import product_menu
 from inventory import inventory_menu
 from store import store_menu
-
-# 팀원 담당
-# from purchase import purchase_menu
-# from order import order_menu
-# from delivery import delivery_menu
-
+from transaction import purchase_menu, order_menu, delivery_menu
 
 def main():
     while True:
@@ -33,13 +28,13 @@ def main():
             store_menu()
 
         elif choice == "4":
-            print("구매 기능 준비 중")
+            purchase_menu()
 
         elif choice == "5":
-            print("발주 기능 준비 중")
+            order_menu()
 
         elif choice == "6":
-            print("입고 기능 준비 중")
+            delivery_menu()
 
         elif choice == "0":
             print("프로그램 종료")
