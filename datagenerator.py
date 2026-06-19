@@ -31,6 +31,7 @@ BRANDS = [
 ]
 
 # (barcode, product_name, brand_name, category_name, base_price, unit)
+# category_name은 PRODUCTCATEGORYMAP에 매핑하기 위해서만 사용 (PRODUCT 테이블에는 컬럼 없음)
 PRODUCT_SEEDS = [
     ("880000000001", "Pepsi Zero 500ml",        "Pepsi",       "탄산음료",   1900, "개"),
     ("880000000002", "Pepsi Cola 1.5L",          "Pepsi",       "탄산음료",   3200, "개"),
@@ -52,6 +53,13 @@ PRODUCT_SEEDS = [
     ("880000000018", "Cup Ice",                  "Haitai",      "아이스크림", 800,  "개"),
 ]
 
+# [추가] queries.sql ⑩번(여러 카테고리에 속하는 제품) 쿼리가 의미 있는 결과를 내도록
+# 위 제품 중 일부를 추가 카테고리에도 매핑한다. (product_name, extra_category_name)
+EXTRA_CATEGORY_MAP = [
+    ("Wet Tissue", "식품"),  # 생활용품 + 식품(편의상 비치) 등 다중 카테고리 예시
+    ("Cup Ice", "음료"),     # 아이스크림 + 음료
+]
+
 STORE_DATA = [
     ("Emart24 Ewha Asan Engineering", "서울특별시 서대문구 이화여대길 52 이화여자대학교 아산공학관", "02-1234-0001", "08:00-22:00"),
     ("Emart24 Ewha Main Gate",        "서울특별시 서대문구 이화여대길 50",                          "02-1234-0002", "00:00-24:00"),
@@ -69,6 +77,15 @@ SUPPLIER_DATA = [
     ("Supplier C", "이영희", "02-2000-0003", "supplier_c@example.com", "서울특별시 중구 공급로 3"),
     ("Supplier D", "박민준", "02-2000-0004", "supplier_d@example.com", "서울특별시 중구 공급로 4"),
     ("Supplier E", "최수연", "02-2000-0005", "supplier_e@example.com", "서울특별시 중구 공급로 5"),
+]
+
+# [추가] SUPPLIER_BRAND 매핑용: 각 공급업체가 취급하는 브랜드 (supplier_name, [brand_name, ...])
+SUPPLIER_BRAND_DATA = [
+    ("Supplier A", ["Pepsi", "Coca-Cola"]),
+    ("Supplier B", ["Seoul Dairy", "Maeil"]),
+    ("Supplier C", ["Lotte", "Orion", "Haitai"]),
+    ("Supplier D", ["Nongshim", "Samyang"]),
+    ("Supplier E", ["CJ", "Pulmuone", "Dongwon"]),
 ]
 
 
@@ -98,6 +115,7 @@ def clear_tables(cur: sqlite3.Cursor) -> None:
         "DELIVERY", "ORDERDETAIL", "PURCHASEORDER",
         "SALESDETAIL", "SALES",
         "INVENTORY",
+        "PRODUCTCATEGORYMAP", "SUPPLIER_BRAND",
         "PRODUCT", "PRODUCTCATEGORY", "BRAND",
         "MEMBER", "GUEST", "CUSTOMER",
         "STORE", "SUPPLIER",
@@ -145,13 +163,34 @@ def generate_suppliers(cur: sqlite3.Cursor) -> list[int]:
     return ids
 
 
+def generate_supplier_brands(
+    cur: sqlite3.Cursor,
+    supplier_name_to_id: dict[str, int],
+    brand_map: dict[str, int],
+) -> None:
+    """[추가] SUPPLIER_BRAND 매핑 INSERT (queries.sql ⑧번 쿼리용)"""
+    for supplier_name, brand_names in SUPPLIER_BRAND_DATA:
+        supplier_id = supplier_name_to_id[supplier_name]
+        for brand_name in brand_names:
+            insert_row(cur, "SUPPLIER_BRAND", {
+                "supplier_id": supplier_id,
+                "brand_id": brand_map[brand_name],
+            })
+
+
 def generate_products(
     cur: sqlite3.Cursor,
     brand_map: dict[str, int],
     category_map: dict[str, int],
 ) -> list[tuple[int, int]]:
-    """INSERT products → [(product_id, base_price), ...]"""
+    """
+    INSERT products → [(product_id, base_price), ...]
+    PRODUCT 테이블에는 category_id 컬럼이 없으므로(스키마상 N:M 관계),
+    카테고리 연결은 PRODUCTCATEGORYMAP에 별도로 INSERT한다.
+    """
     result = []
+    name_to_id: dict[str, int] = {}
+
     for barcode, name, brand, category, price, unit in PRODUCT_SEEDS:
         pid = insert_row(cur, "PRODUCT", {
             "product_name": name,
@@ -159,9 +198,30 @@ def generate_products(
             "base_price": price,
             "unit": unit,
             "brand_id": brand_map[brand],
-            "category_id": category_map[category],
         })
         result.append((pid, price))
+        name_to_id[name] = pid
+
+        # 기본 카테고리 매핑
+        insert_row(cur, "PRODUCTCATEGORYMAP", {
+            "product_id": pid,
+            "category_id": category_map[category],
+        })
+
+    # [추가] 일부 제품은 추가 카테고리에도 매핑 (다대다 관계 / 쿼리 ⑩번용)
+    for product_name, extra_category in EXTRA_CATEGORY_MAP:
+        pid = name_to_id[product_name]
+        cid = category_map[extra_category]
+        cur.execute(
+            "SELECT 1 FROM PRODUCTCATEGORYMAP WHERE product_id = ? AND category_id = ?",
+            (pid, cid),
+        )
+        if cur.fetchone() is None:
+            insert_row(cur, "PRODUCTCATEGORYMAP", {
+                "product_id": pid,
+                "category_id": cid,
+            })
+
     return result
 
 
@@ -238,7 +298,6 @@ def generate_sales(
 ) -> None:
     today = date.today()
     main_store_id = store_ids[0]
-    milk_pids = [pid for pid, _ in products[:7] if pid in [p[0] for p in products[4:7]]]
     # 우유 product_id 직접 추출 (인덱스 4,5,6 = Seoul Milk, Maeil Milk, Banana Milk)
     milk_product_ids = {products[4][0], products[5][0], products[6][0]}
 
@@ -303,10 +362,21 @@ def generate_purchase_orders(
     supplier_ids: list[int],
     products: list[tuple[int, int]],
     order_count: int = 100,
+    include_partial_status: bool = False,
 ) -> None:
+    """
+    PURCHASEORDER + ORDERDETAIL(+ 입고완료/부분입고 시 DELIVERY) 생성.
+
+    include_partial_status=True이면 '부분입고' 상태도 더미데이터에 포함한다.
+    '부분입고'인 경우 DELIVERY는 order_quantity보다 적게 생성하여
+    transaction.py의 delivery_menu()가 다루는 시나리오(잔여 입고)를 재현한다.
+    """
     today = date.today()
     main_store_id = store_ids[0]
+
     statuses = ["발주완료", "입고완료", "입고완료", "취소"]
+    if include_partial_status:
+        statuses.append("부분입고")
 
     for _ in range(order_count):
         order_date = today - timedelta(days=random.randint(0, 60))
@@ -337,9 +407,18 @@ def generate_purchase_orders(
                 "supply_price": supply_price,
             })
 
-            # 입고완료 상태면 DELIVERY도 생성
+            # 입고완료: 전량 입고 / 부분입고: 일부만 입고된 DELIVERY 생성
             if status == "입고완료":
-                delivered_qty = random.randint(1, order_qty)
+                delivered_qty = order_qty
+                insert_row(cur, "DELIVERY", {
+                    "delivery_datetime": expected_date.isoformat() + " 10:00:00",
+                    "delivered_quantity": delivered_qty,
+                    "order_id": order_id,
+                    "product_id": product_id,
+                })
+            elif status == "부분입고":
+                # 1 이상 order_qty 미만으로 일부만 입고 (남은 수량이 반드시 존재해야 함)
+                delivered_qty = random.randint(1, max(1, order_qty - 1))
                 insert_row(cur, "DELIVERY", {
                     "delivery_datetime": expected_date.isoformat() + " 10:00:00",
                     "delivered_quantity": delivered_qty,
@@ -358,6 +437,11 @@ def main() -> None:
     parser.add_argument("--reset", action="store_true", help="기존 더미 데이터를 삭제하고 다시 생성")
     parser.add_argument("--sales", type=int, default=600)
     parser.add_argument("--orders", type=int, default=100)
+    parser.add_argument(
+        "--with-partial-status",
+        action="store_true",
+        help="PURCHASEORDER 상태값에 '부분입고'도 포함시켜 생성",
+    )
     args = parser.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -371,13 +455,20 @@ def main() -> None:
         category_map = generate_categories(cur)
         brand_map = generate_brands(cur)
         supplier_ids = generate_suppliers(cur)
+
+        supplier_name_to_id = {name: sid for (name, *_), sid in zip(SUPPLIER_DATA, supplier_ids)}
+        generate_supplier_brands(cur, supplier_name_to_id, brand_map)
+
         products = generate_products(cur, brand_map, category_map)
         store_ids = generate_stores(cur)
         customer_ids = generate_customers(cur)
 
         generate_inventory(cur, store_ids, products)
         generate_sales(cur, store_ids, customer_ids, products, args.sales)
-        generate_purchase_orders(cur, store_ids, supplier_ids, products, args.orders)
+        generate_purchase_orders(
+            cur, store_ids, supplier_ids, products, args.orders,
+            include_partial_status=args.with_partial_status,
+        )
 
         conn.commit()
         print("✅ 더미 데이터 생성 완료!")
@@ -385,7 +476,7 @@ def main() -> None:
         print(f"   - 상품: {len(products)}개")
         print(f"   - 고객: 150명 (MEMBER 100 + GUEST 50)")
         print(f"   - 판매: {args.sales}건")
-        print(f"   - 발주: {args.orders}건 (입고완료 건은 DELIVERY도 생성)")
+        print(f"   - 발주: {args.orders}건 (입고완료/부분입고 건은 DELIVERY도 생성)")
 
     except Exception:
         conn.rollback()

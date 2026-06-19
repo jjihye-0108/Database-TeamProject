@@ -28,6 +28,16 @@ def show_inventory_by_store(store_id):
     conn = get_connection()
     cur = conn.cursor()
 
+    # [수정] 매장 자체가 없는 경우와, 매장은 있지만 재고가 0건인 경우를 구분
+    cur.execute(
+        "SELECT 1 FROM STORE WHERE store_id = ?",
+        (store_id,),
+    )
+    if cur.fetchone() is None:
+        print("해당 매장이 존재하지 않습니다.")
+        conn.close()
+        return
+
     cur.execute("""
         SELECT
             p.product_id,
@@ -44,17 +54,18 @@ def show_inventory_by_store(store_id):
     rows = cur.fetchall()
 
     if not rows:
-        print("해당 매장이 존재하지 않거나 재고 정보가 없습니다.")
+        print("해당 매장의 재고 정보가 없습니다.")
     else:
         print("\n[매장 재고]")
         print("-" * 60)
 
-        for pid, name, qty, safety in rows:
+        # [수정] sqlite3.Row는 컬럼명으로 접근 (db.py에서 row_factory = sqlite3.Row 설정됨)
+        for row in rows:
             print(
-                f"상품ID: {pid:<3} | "
-                f"{name:<25} | "
-                f"재고: {qty:<4} | "
-                f"안전재고: {safety}"
+                f"상품ID: {row['product_id']:<3} | "
+                f"{row['product_name']:<25} | "
+                f"재고: {row['quantity']:<4} | "
+                f"안전재고: {row['safety_stock']}"
             )
 
     conn.close()
@@ -85,12 +96,13 @@ def show_low_stock():
         print("\n[재고 부족 상품]")
         print("-" * 70)
 
-        for store_id, product, qty, safety in rows:
+        # [수정] sqlite3.Row는 컬럼명으로 접근
+        for row in rows:
             print(
-                f"매장ID: {store_id:<3} | "
-                f"{product:<25} | "
-                f"재고: {qty:<4} | "
-                f"안전재고: {safety}"
+                f"매장ID: {row['store_id']:<3} | "
+                f"{row['product_name']:<25} | "
+                f"재고: {row['quantity']:<4} | "
+                f"안전재고: {row['safety_stock']}"
             )
 
     conn.close()
